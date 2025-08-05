@@ -1,0 +1,159 @@
+//********************************************/
+//Universidad del Valle de Guatemala
+//BE3029 - Electrónica Digital 2
+// Fátima Camposeco
+//21/07/2025
+// Ejemplo Hola mundo
+//MCU: ESP32 dev kit 1.0
+//********************************************/
+
+//===Librerias====
+#include <Arduino.h>
+#include <stdint.h>
+
+// == Botones contador manual ===
+#define BOTON_INC 19
+#define BOTON_DEC 21
+
+//== LEDS contador manual==
+#define LEDM1 2
+#define LEDM2 4
+#define LEDM3 5
+#define LEDM4 18
+
+// LEDS contador automático 
+#define LEDT1 26
+#define LEDT2 25
+#define LEDT3 33
+#define LEDT4 27
+
+// ==== LED de alarma ====
+#define LED_ALARMA 22
+
+//==== Reset ===
+#define bot_reset 12
+
+// ==== Variables globales ====
+volatile uint32_t contadorManual = 0; //para el contador manual 
+volatile uint32_t contadorTimer = 0; // contador automatico 
+bool estadoAlarma = false;
+
+volatile uint32_t tiempo_reset = 0; 
+
+// Variables ISR
+const uint32_t TIEMPO_ANTIRREBOTE = 200;
+volatile uint32_t lastISR_INC = 0;  
+volatile uint32_t lastISR_DEC = 0;
+
+// ==== Timer ====
+hw_timer_t *timer = NULL;
+portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+
+// ==== Funciones ====
+void actualizarLEDSManual(uint8_t valor) {
+  digitalWrite(LEDM1, bitRead(valor, 0)); //numeros binarios manual 
+  digitalWrite(LEDM2, bitRead(valor, 1));
+  digitalWrite(LEDM3, bitRead(valor, 2));
+  digitalWrite(LEDM4, bitRead(valor, 3));
+}
+
+void actualizarLEDSTimer(uint8_t valor) {
+  digitalWrite(LEDT1, bitRead(valor, 0)); //numeros binarios automatico 
+  digitalWrite(LEDT2, bitRead(valor, 1));
+  digitalWrite(LEDT3, bitRead(valor, 2));
+  digitalWrite(LEDT4, bitRead(valor, 3));
+}
+
+// ==== ISR para contador automático ====
+void IRAM_ATTR onTimer() {
+  portENTER_CRITICAL_ISR(&timerMux);
+  contadorTimer = (contadorTimer + 1) % 16;
+  portEXIT_CRITICAL_ISR(&timerMux);
+}
+
+// ==== ISR para botones ====
+void IRAM_ATTR ISR_INC() {
+  uint32_t ahora = millis();
+  if (ahora - lastISR_INC > TIEMPO_ANTIRREBOTE) {
+    contadorManual = (contadorManual + 1) % 16;
+    lastISR_INC = ahora;
+  }
+}
+
+void IRAM_ATTR ISR_DEC() {
+  uint32_t ahora = millis();
+  if (ahora - lastISR_DEC > TIEMPO_ANTIRREBOTE) {
+    contadorManual = (contadorManual == 0) ? 15 : contadorManual - 1; 
+    lastISR_DEC = ahora;
+  }
+}
+
+void setup() {
+  Serial.begin(115200); //iniciar comunicación serial 
+//===SALIDAS ===
+  // LEDs contador manual
+  pinMode(LEDM1, OUTPUT);
+  pinMode(LEDM2, OUTPUT);
+  pinMode(LEDM3, OUTPUT);
+  pinMode(LEDM4, OUTPUT);
+
+  // LEDs contador automático
+  pinMode(LEDT1, OUTPUT);
+  pinMode(LEDT2, OUTPUT);
+  pinMode(LEDT3, OUTPUT);
+  pinMode(LEDT4, OUTPUT);
+
+  // LED alarma
+  pinMode(LED_ALARMA, OUTPUT);
+
+  // Botones
+  pinMode(BOTON_INC, INPUT_PULLUP);
+  pinMode(BOTON_DEC, INPUT_PULLDOWN);
+
+  //ISR...
+  attachInterrupt(digitalPinToInterrupt(BOTON_INC), ISR_INC, RISING);
+  attachInterrupt(digitalPinToInterrupt(BOTON_DEC), ISR_DEC, FALLING);
+
+  // Timer cada 250 ms
+  timer = timerBegin(0, 80, true); 
+  timerAttachInterrupt(timer, &onTimer, true);
+  timerAlarmWrite(timer, 250000, true); // 250 ms
+  timerAlarmEnable(timer);
+}
+
+
+void loop() {
+  //Leer reset con touch 
+  uint32_t botreset = touchRead(bot_reset);
+  uint32_t reset = millis(); 
+  if(botreset < 40 && (reset - tiempo_reset > 150 )) {
+    contadorTimer = 0;
+    tiempo_reset = reset;
+
+  }
+
+  // Mostrar valores actuales
+  actualizarLEDSManual(contadorManual);
+
+  uint32_t copiaContadorTimer;
+  portENTER_CRITICAL(&timerMux); //por el esp32
+  copiaContadorTimer = contadorTimer;
+  portEXIT_CRITICAL(&timerMux);
+
+  actualizarLEDSTimer(copiaContadorTimer);
+
+  // Comparación para activar alarma
+  if (contadorManual == copiaContadorTimer) {
+    estadoAlarma = !estadoAlarma;
+    digitalWrite(LED_ALARMA, estadoAlarma);
+
+    // Reiniciar contador automático
+    portENTER_CRITICAL(&timerMux);
+    contadorTimer = 0;
+    portEXIT_CRITICAL(&timerMux);
+
+    delay(50); 
+  }
+
+  delay(10); 
+}
